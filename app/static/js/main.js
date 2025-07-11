@@ -3,7 +3,9 @@ import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls';
 
 document.addEventListener('DOMContentLoaded', () => {
-    // --- ELEMENTOS DOM ---
+    // =================================================================================
+    // INICIALIZAÇÃO E SELETORES DE ELEMENTOS DOM
+    // =================================================================================
     const uploadForm = document.getElementById('upload-form');
     const validateBtn = document.getElementById('validate-btn');
     const statusArea = document.getElementById('status-area');
@@ -19,22 +21,36 @@ document.addEventListener('DOMContentLoaded', () => {
     const generateQueryBtn = document.getElementById('generate-query-btn');
     const viewerContainer = document.getElementById('viewer-container');
 
-    // --- ESTADO DA APLICAÇÃO ---
+    // =================================================================================
+    // ESTADO GLOBAL DA APLICAÇÃO
+    // =================================================================================
     let scene, camera, renderer, controls;
-    let ifcModel = null;
-    let guidToMeshMap = new Map();
-    let selectedObject = null;
-    let conflictMessages = {}; // Mantém o estado dos conflitos
+    let ifcModel = null; // Armazena o grupo que contém todos os objetos 3D do modelo
+    let guidToMeshMap = new Map(); // Mapeia o GlobalId de um objeto ao seu mesh 3D
+    let selectedObject = null; // Armazena o objeto 3D atualmente selecionado
+    let conflictMessages = {}; // Armazena os erros de validação (GlobalId -> Mensagem)
     const raycaster = new THREE.Raycaster();
     const mouse = new THREE.Vector2();
 
-    // --- MATERIAIS PRÉ-DEFINIDOS ---
+    // =================================================================================
+    // MATERIAIS PRÉ-DEFINIDOS (THREE.JS)
+    // =================================================================================
+    // Material para paredes, com transparência para visualização interna.
     const wallMaterial = new THREE.MeshBasicMaterial({ color: 0x8090a0, transparent: true, opacity: 0.3, depthWrite: false });
+    // Material padrão para todos os outros objetos válidos.
     const defaultMaterial = new THREE.MeshBasicMaterial({ color: 0xcccccc });
+    // Material para objetos que falharam na validação (vermelho sólido).
     const errorMaterial = new THREE.MeshBasicMaterial({ color: 0xff0000, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: 1 });
+    // Material de destaque para objetos VÁLIDOS selecionados (amarelo).
     const highlightMaterial = new THREE.MeshBasicMaterial({ color: 0xffff00 });
+    // Material de destaque para objetos COM ERRO selecionados (vermelho escuro).
+    const errorHighlightMaterial = new THREE.MeshBasicMaterial({ color: '#991B1B' });
 
-    // --- LÓGICA ---
+    // =================================================================================
+    // FUNÇÕES CENTRAIS DO VISUALIZADOR 3D
+    // =================================================================================
+
+    // Função dedicada para lidar com o redimensionamento da janela e do canvas.
     function onWindowResize() {
         if (!renderer || !camera) return;
         const width = viewerContainer.clientWidth;
@@ -44,11 +60,9 @@ document.addEventListener('DOMContentLoaded', () => {
         renderer.setSize(width, height);
     }
 
+    // Configura a cena, câmera, luzes e renderer do Three.js.
     const setupThreeJs = () => {
-        if (renderer) {
-            renderer.domElement.remove();
-            renderer.dispose();
-        }
+        if (renderer) { renderer.domElement.remove(); renderer.dispose(); }
         scene = new THREE.Scene();
         scene.background = new THREE.Color(0x222222);
         camera = new THREE.PerspectiveCamera(75, viewerContainer.clientWidth / viewerContainer.clientHeight || 1, 0.1, 1000);
@@ -61,7 +75,7 @@ document.addEventListener('DOMContentLoaded', () => {
         renderer.setPixelRatio(window.devicePixelRatio);
         viewerContainer.appendChild(renderer.domElement);
         controls = new OrbitControls(camera, renderer.domElement);
-        onWindowResize();
+        onWindowResize(); // Garante o tamanho correto na inicialização
         const animate = () => {
             requestAnimationFrame(animate);
             controls.update();
@@ -70,6 +84,7 @@ document.addEventListener('DOMContentLoaded', () => {
         animate();
     };
 
+    // Constrói o modelo 3D a partir dos dados de geometria recebidos do backend.
     const loadProcessedIFCModel = (elements3dData) => {
         if (ifcModel) scene.remove(ifcModel);
         guidToMeshMap.clear();
@@ -83,7 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 geometry.computeVertexNormals();
                 let material = (elementData.type === 'IfcWall' || elementData.type === 'IfcWallStandardCase') ? wallMaterial : defaultMaterial;
                 const mesh = new THREE.Mesh(geometry, material.clone());
-                mesh.userData = { ...elementData, originalMaterial: mesh.material };
+                mesh.userData = { ...elementData, originalMaterial: mesh.material }; // Guarda o material original de cada objeto
                 group.add(mesh);
                 guidToMeshMap.set(elementData.globalId, mesh);
             } catch (error) {
@@ -91,8 +106,11 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         ifcModel = group;
+        // Corrige a orientação do modelo (IFC usa Z como "para cima", Three.js usa Y)
         ifcModel.rotation.x = -Math.PI / 2;
         scene.add(ifcModel);
+
+        // Ajusta a câmera para enquadrar o modelo carregado
         const box = new THREE.Box3().setFromObject(ifcModel);
         const center = box.getCenter(new THREE.Vector3());
         const size = box.getSize(new THREE.Vector3());
@@ -106,6 +124,7 @@ document.addEventListener('DOMContentLoaded', () => {
         addChatMessage(`Modelo 3D carregado! ${elements3dData.length} elementos processados.`, 'bot');
     };
     
+    // Aplica o material de erro aos objetos que falharam na validação.
     const highlightValidationErrors = (validationResults) => {
         let highlightedCount = 0;
         validationResults.forEach(result => {
@@ -114,7 +133,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 const mesh = guidToMeshMap.get(guid);
                 if (mesh) {
                     mesh.material = errorMaterial;
-                    mesh.userData.originalMaterial = errorMaterial;
+                    mesh.userData.originalMaterial = errorMaterial; // O material "original" agora é o de erro
                     highlightedCount++;
                 }
             }
@@ -122,44 +141,65 @@ document.addEventListener('DOMContentLoaded', () => {
         if (highlightedCount > 0) addChatMessage(`Destacados ${highlightedCount} elementos com conflitos.`, 'bot');
     };
 
+    // Lida com o clique do mouse no visualizador 3D.
     function onMouseClick(event) {
+        // Restaura o material do objeto previamente selecionado
         if (selectedObject) {
             selectedObject.material = selectedObject.userData.originalMaterial;
             selectedObject = null;
         }
+        
+        // Calcula a posição do mouse e lança um raio
         const rect = renderer.domElement.getBoundingClientRect();
         mouse.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
         mouse.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(mouse, camera);
+        
+        // Intersecta apenas com os objetos do modelo, ignorando o chão
         if (!ifcModel) return;
         const intersects = raycaster.intersectObjects(ifcModel.children, true);
+
         if (intersects.length > 0) {
             selectedObject = intersects[0].object;
-            selectedObject.material = highlightMaterial;
+            const guid = selectedObject.userData.globalId;
+
+            // Verifica se o objeto clicado tem um erro e aplica o destaque correto
+            const hasError = conflictMessages.hasOwnProperty(`ifc:${guid}`);
+            selectedObject.material = hasError ? errorHighlightMaterial : highlightMaterial;
+            
+            // Exibe informações no chatbot e destaca o nó no grafo
             let info = `Objeto selecionado: ${selectedObject.userData.name || 'Sem nome'}`;
-            if (selectedObject.userData.globalId) {
-                info += `\nGlobalId: ${selectedObject.userData.globalId}`;
-                highlightNodeInGraph(selectedObject.userData.globalId);
+            if (guid) {
+                info += `\nGlobalId: ${guid}`;
+                highlightNodeInGraph(guid);
             }
             if (selectedObject.userData.type) info += `\nTipo: ${selectedObject.userData.type}`;
             addChatMessage(info, 'bot');
         }
     }
 
+    // =================================================================================
+    // FLUXO PRINCIPAL DA APLICAÇÃO (SUBMISSÃO DO FORMULÁRIO)
+    // =================================================================================
     uploadForm.addEventListener('submit', async (e) => {
         e.preventDefault();
         const formData = new FormData(uploadForm);
         showStatus('A validar e a processar o modelo...', false, true);
         validateBtn.disabled = true;
         mainContent.classList.add('hidden');
-        conflictMessages = {};
+        conflictMessages = {}; // Reseta os conflitos da sessão anterior
         try {
+            // 1. Configura a cena 3D
             setupThreeJs();
             addChatMessage('A validar e a processar o modelo...', 'bot');
+            
+            // 2. Envia o arquivo para o backend e espera a resposta
             const response = await fetch('/validate', { method: 'POST', body: formData });
             if (!response.ok) throw new Error(`Erro do servidor: ${response.status}`);
             const data = await response.json();
             if (data.error) throw new Error(data.error);
+
+            // 3. Se houver dados de geometria, carrega e destaca os erros
             if (data.elements_3d_data && data.elements_3d_data.length > 0) {
                 loadProcessedIFCModel(data.elements_3d_data);
                 if (data.validation) {
@@ -173,10 +213,12 @@ document.addEventListener('DOMContentLoaded', () => {
             } else {
                 addChatMessage('Nenhum dado de geometria 3D foi recebido do backend.', 'bot');
             }
+
+            // 4. Exibe os resultados e componentes da UI
             showStatus('Validação e carregamento concluídos!', false);
             renderReport(data.validation);
             mainContent.classList.remove('hidden');
-            onWindowResize();
+            onWindowResize(); // Garante o tamanho correto da viewport
             loadFullGraph();
             populateOntologyExplorer();
         } catch (error) {
@@ -188,6 +230,9 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // =================================================================================
+    // FUNÇÕES AUXILIARES (CHATBOT, UI, GRAFO)
+    // =================================================================================
     const addChatMessage = (message, sender) => {
         const messageDiv = document.createElement('div');
         messageDiv.className = `chat-message p-3 rounded-lg max-w-2xl break-words shadow-sm ${sender === 'user' ? 'bg-indigo-500 text-white self-end ml-auto' : 'bg-gray-200 text-gray-800 self-start mr-auto'}`;
@@ -207,7 +252,7 @@ document.addEventListener('DOMContentLoaded', () => {
             if (data.object) {
                 const graphResponse = await fetch(`/graph-data?object=${encodeURIComponent(data.object)}`);
                 const graphData = await graphResponse.json();
-                drawGraph(graphData, conflictMessages, addChatMessage); // Passa os conflitos
+                drawGraph(graphData, conflictMessages, addChatMessage);
             }
         } catch (error) {
             addChatMessage('Ocorreu um erro ao comunicar com o servidor.', 'bot');
@@ -265,7 +310,6 @@ document.addEventListener('DOMContentLoaded', () => {
             });
         } catch (error) { console.error("Erro ao popular construtor:", error); }
     };
-    
     const loadFullGraph = async () => {
         addChatMessage('A gerar o grafo completo...', 'bot');
         try {
@@ -278,7 +322,6 @@ document.addEventListener('DOMContentLoaded', () => {
             addChatMessage(`Ocorreu um erro ao gerar o grafo: ${error.message}`, 'bot');
         }
     };
-
     const checkSelections = () => {
         generateQueryBtn.disabled = !(relationSelect.value && objectSelect.value);
     };
@@ -290,14 +333,12 @@ document.addEventListener('DOMContentLoaded', () => {
         userInput.focus();
     };
 
-    // --- EVENT LISTENERS ---
+    // Adiciona os listeners de eventos a todos os elementos interativos
     viewerContainer.addEventListener('click', onMouseClick);
     sendBtn.addEventListener('click', sendMessage);
     userInput.addEventListener('keypress', (e) => { if (e.key === 'Enter') sendMessage(); });
     resetBtn.addEventListener('click', () => resetGraph());
-    
     fullGraphBtn.addEventListener('click', loadFullGraph);
-
     relationSelect.addEventListener('change', checkSelections);
     objectSelect.addEventListener('change', checkSelections);
     generateQueryBtn.addEventListener('click', generateQuestion);
